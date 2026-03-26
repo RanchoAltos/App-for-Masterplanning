@@ -1,0 +1,1281 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="RanchoPlan">
+<title>RanchoPlan IA</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{background:#0f1f0f;color:#e8ead4;font-family:Georgia,serif;overscroll-behavior:none}
+input,button{-webkit-appearance:none;font-family:inherit}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+@keyframes spin{to{transform:rotate(360deg)}}
+.safe-top{padding-top:env(safe-area-inset-top,0px)}
+.safe-bot{padding-bottom:env(safe-area-inset-bottom,0px)}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useRef,useCallback}=React;
+
+// ── Constants ──────────────────────────────────────────────────────────────
+const ZONE_COLORS={camino:"#D4A853",siembra_olivos:"#6B8E23",siembra_aguacate:"#228B22",siembra_alfalfa:"#32CD32",siembra_milpa:"#DAA520",siembra_tuberculos:"#CD853F",siembra_hortalizas:"#90EE90",engorda_toros:"#8B0000",gallinas:"#FF8C00",corderos:"#DEB887",ordeña:"#F5F5DC",queso:"#F0E68C",boutique:"#E67E22",cabanas:"#3498DB",lago:"#1ABC9C",alberca:"#2980B9",bar:"#E74C3C",eventos:"#9B59B6",camino_interior:"#D4A853",compostaje:"#6B4226",bodegas:"#708090"};
+const ZONE_ICONS={camino:"🛤️",siembra_olivos:"🫒",siembra_aguacate:"🥑",siembra_alfalfa:"🌿",siembra_milpa:"🌽",siembra_tuberculos:"🥔",siembra_hortalizas:"🥬",engorda_toros:"🐂",gallinas:"🐓",corderos:"🐑",ordeña:"🥛",queso:"🧀",boutique:"🏪",cabanas:"🏕️",lago:"💧",alberca:"🏊",bar:"🍹",eventos:"🎪",camino_interior:"🛤️",compostaje:"♻️",bodegas:"🏚️"};
+const TREE_TYPES=[{id:"mezquite",label:"Mezquite",icon:"🌳"},{id:"huizache",label:"Huizache",icon:"🌿"},{id:"encino",label:"Encino",icon:"🌲"},{id:"nopal",label:"Nopal",icon:"🌵"},{id:"aguacate",label:"Aguacate",icon:"🥑"},{id:"pino",label:"Pino",icon:"🌲"},{id:"fresno",label:"Fresno",icon:"🌳"},{id:"trueno",label:"Trueno",icon:"🌿"},{id:"palo_azul",label:"Palo Azul",icon:"🌿"},{id:"roble",label:"Roble",icon:"🌲"},{id:"otro",label:"Otro",icon:"🌱"}];
+const TREE_SIZES=[{id:"pequeño",label:"Pequeño",sub:"<3m"},{id:"mediano",label:"Mediano",sub:"3-8m"},{id:"grande",label:"Grande",sub:"8-15m"},{id:"majestuoso",label:"Majestuoso",sub:">15m"}];
+const POI_TYPES=[{id:"acceso",label:"Acceso vehicular",icon:"🚗"},{id:"agua",label:"Fuente de agua",icon:"💧"},{id:"construccion",label:"Construcción",icon:"🏠"},{id:"jagüey",label:"Jagüey/Represa",icon:"🌊"},{id:"arroyo",label:"Arroyo",icon:"🌀"},{id:"otro",label:"Otro",icon:"📍"}];
+
+// ── UTM ────────────────────────────────────────────────────────────────────
+function latLngToUTM(lat,lng){
+  const a=6378137,f=1/298.257223563,b=a*(1-f),e2=1-(b*b)/(a*a),k0=0.9996;
+  const zone=Math.floor((lng+180)/6)+1,lng0=(zone-1)*6-180+3;
+  const latR=lat*Math.PI/180,lngR=lng*Math.PI/180,lng0R=lng0*Math.PI/180;
+  const N=a/Math.sqrt(1-e2*Math.sin(latR)**2),T=Math.tan(latR)**2,C=e2/(1-e2)*Math.cos(latR)**2,A=Math.cos(latR)*(lngR-lng0R);
+  const e4=e2*e2,e6=e4*e2;
+  const M=a*((1-e2/4-3*e4/64-5*e6/256)*latR-(3*e2/8+3*e4/32+45*e6/1024)*Math.sin(2*latR)+(15*e4/256+45*e6/1024)*Math.sin(4*latR)-(35*e6/3072)*Math.sin(6*latR));
+  const easting=k0*N*(A+(1-T+C)*A**3/6+(5-18*T+T**2+72*C-58*(e2/(1-e2)))*A**5/120)+500000;
+  const northing=k0*(M+N*Math.tan(latR)*(A**2/2+(5-T+9*C+4*C**2)*A**4/24+(61-58*T+T**2+600*C-330*(e2/(1-e2)))*A**6/720))+(lat<0?10000000:0);
+  return{easting:Math.round(easting),northing:Math.round(northing),zone,hem:lat>=0?"N":"S",str:`${zone}${lat>=0?"N":"S"} ${Math.round(easting)}E ${Math.round(northing)}N`};
+}
+
+// ── Base helpers ───────────────────────────────────────────────────────────
+function hav(a,b){const R=6371000,p1=a.lat*Math.PI/180,p2=b.lat*Math.PI/180,dp=(b.lat-a.lat)*Math.PI/180,dl=(b.lng-a.lng)*Math.PI/180,x=Math.sin(dp/2)**2+Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2;return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));}
+function totalDist(pts){let d=0;for(let i=1;i<pts.length;i++)d+=hav(pts[i-1],pts[i]);return d;}
+function bnds(pts){if(!pts.length)return null;const la=pts.map(p=>p.lat),ln=pts.map(p=>p.lng);return{minLat:Math.min(...la),maxLat:Math.max(...la),minLng:Math.min(...ln),maxLng:Math.max(...ln)};}
+function toCv(pt,b,W,H,pad=40){const r=(v,mn,mx)=>mn===mx?.5:(v-mn)/(mx-mn);return{x:pad+r(pt.lng,b.minLng,b.maxLng)*(W-2*pad),y:H-pad-r(pt.lat,b.minLat,b.maxLat)*(H-2*pad)};}
+function centroid(pts){if(!pts.length)return null;return{lat:pts.reduce((s,p)=>s+p.lat,0)/pts.length,lng:pts.reduce((s,p)=>s+p.lng,0)/pts.length};}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MOTOR DE ANÁLISIS TOPOGRÁFICO AVANZADO
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── 1. DEM — Modelo Digital de Elevación por interpolación IDW ────────────
+function buildDEM(points, COLS=24, ROWS=24){
+  const b=bnds(points);
+  if(!b)return null;
+  const hasAlt=points.filter(p=>p.alt!=null).length>3;
+  const grid=[];
+  for(let r=0;r<ROWS;r++){
+    for(let c=0;c<COLS;c++){
+      const lat=b.minLat+(r+.5)/ROWS*(b.maxLat-b.minLat);
+      const lng=b.minLng+(c+.5)/COLS*(b.maxLng-b.minLng);
+      let elev=0;
+      if(hasAlt){
+        // IDW — Inverse Distance Weighting
+        let wSum=0,wzSum=0;
+        points.forEach(p=>{
+          if(p.alt==null)return;
+          const d=Math.hypot((p.lat-lat)*111320,(p.lng-lng)*111320*Math.cos(lat*Math.PI/180));
+          if(d<0.5){wzSum+=p.alt;wSum+=1;return;}
+          const w=1/(d*d);
+          wzSum+=w*p.alt;wSum+=w;
+        });
+        elev=wSum>0?wzSum/wSum:0;
+      } else {
+        // Sin altímetro: sintetizar desde densidad de puntos (proxy de velocidad)
+        let wSum=0,wzSum=0;
+        points.forEach((p,i)=>{
+          if(i===0)return;
+          const d=Math.hypot((p.lat-lat)*111320,(p.lng-lng)*111320*Math.cos(lat*Math.PI/180));
+          const dt=(p.t-points[i-1].t)/1000;
+          const dist2=hav(points[i-1],p);
+          const speed=dt>0?dist2/dt:1.2;
+          const synElev=Math.max(0,((1.2-speed)/1.2)*50);
+          const w=1/Math.max(d*d,1);
+          wzSum+=w*synElev;wSum+=w;
+        });
+        elev=wSum>0?wzSum/wSum:0;
+      }
+      grid.push({r,c,lat,lng,elev});
+    }
+  }
+  // Normalizar elevaciones relativas
+  const elevs=grid.map(g=>g.elev);
+  const minE=Math.min(...elevs),maxE=Math.max(...elevs);
+  grid.forEach(g=>{g.elevNorm=(maxE>minE?(g.elev-minE)/(maxE-minE):0.5);});
+  return{grid,COLS,ROWS,b,hasAlt,minElev:minE,maxElev:maxE};
+}
+
+// ── 2. PENDIENTE por celda (%) ─────────────────────────────────────────────
+function computeSlopes(dem){
+  if(!dem)return[];
+  const {grid,COLS,ROWS,b}=dem;
+  const latM=111320,lngM=111320*Math.cos((b.minLat+b.maxLat)/2*Math.PI/180);
+  const cellH=(b.maxLat-b.minLat)/ROWS*latM;
+  const cellW=(b.maxLng-b.minLng)/COLS*lngM;
+  const g=(r,c)=>grid.find(x=>x.r===r&&x.c===c);
+  return grid.map(cell=>{
+    const{r,c,elev}=cell;
+    const n=g(r+1,c),s=g(r-1,c),e2=g(r,c+1),w=g(r,c-1);
+    const dzdx=e2&&w?(e2.elev-w.elev)/(2*cellW):0;
+    const dzdy=n&&s?(n.elev-s.elev)/(2*cellH):0;
+    const slope=Math.sqrt(dzdx**2+dzdy**2)*100;
+    // Aspect: dirección hacia donde mira la ladera (0=N, 90=E, 180=S, 270=W)
+    const aspect=Math.atan2(-dzdx,dzdy)*180/Math.PI;
+    const aspectNorm=(aspect+360)%360;
+    return{...cell,slope,aspect:aspectNorm,dzdx,dzdy};
+  });
+}
+
+// ── 3. HIDROLOGÍA — Flujo de escorrentía D8 ───────────────────────────────
+function computeFlow(dem,slopedGrid){
+  if(!dem)return{flowAcc:[],sinks:[]};
+  const {COLS,ROWS}=dem;
+  // Direcciones D8: 8 vecinos
+  const dirs=[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+  const g=(r,c)=>slopedGrid.find(x=>x.r===r&&x.c===c);
+  // Flow direction: cada celda fluye hacia su vecino más bajo
+  const flowDir=slopedGrid.map(cell=>{
+    let minElev=cell.elev,minDir=null;
+    dirs.forEach(([dr,dc])=>{
+      const n=g(cell.r+dr,cell.c+dc);
+      if(n&&n.elev<minElev){minElev=n.elev;minDir={r:cell.r+dr,c:cell.c+dc};}
+    });
+    return{...cell,flowTo:minDir};
+  });
+  // Flow accumulation: contar cuántas celdas drenan hacia cada celda
+  const acc=new Map();
+  slopedGrid.forEach(cell=>acc.set(`${cell.r}_${cell.c}`,0));
+  flowDir.forEach(cell=>{
+    if(!cell.flowTo)return;
+    const key=`${cell.flowTo.r}_${cell.flowTo.c}`;
+    acc.set(key,(acc.get(key)||0)+1);
+  });
+  const flowAcc=flowDir.map(cell=>({...cell,flowAcc:acc.get(`${cell.r}_${cell.c}`)||0}));
+  // Identificar sumideros (alta acumulación = dónde converge el agua)
+  const maxAcc=Math.max(...[...acc.values()]);
+  const sinks=flowAcc.filter(c=>c.flowAcc>maxAcc*0.4).sort((a,b)=>b.flowAcc-a.flowAcc);
+  return{flowAcc,sinks};
+}
+
+// ── 4. ORIENTACIÓN SOLAR (Los Altos de Jalisco ~lat 21°N) ─────────────────
+function computeSolarAspect(slopedGrid,lat=20.9){
+  // En lat 21°N el sol está al sur. Laderas con aspect 135-225° (sur/sureste/suroeste)
+  // reciben más radiación solar → mejor para cultivos
+  // Laderas norte (315-45°) → más frescas → mejor para animales y confort
+  return slopedGrid.map(cell=>{
+    const a=cell.aspect;
+    let solar="neutro";
+    if(cell.slope<3)solar="plano";
+    else if(a>=135&&a<=225)solar="solar_alto"; // sur — máxima insolación
+    else if(a>=90&&a<135||a>225&&a<=270)solar="solar_medio";
+    else if(a>=315||a<45)solar="sombra"; // norte — menos sol
+    else solar="solar_bajo";
+    return{...cell,solar};
+  });
+}
+
+// ── 5. CLASIFICAR ZONAS ÓPTIMAS por análisis combinado ────────────────────
+function classifyZones(analyzedGrid,dem,pois){
+  if(!analyzedGrid||!dem)return null;
+  const {COLS,ROWS}=dem;
+
+  // Agrupar celdas por características
+  const flat=analyzedGrid.filter(c=>c.slope<5);
+  const gentle=analyzedGrid.filter(c=>c.slope>=5&&c.slope<15);
+  const steep=analyzedGrid.filter(c=>c.slope>=15);
+  const lowElev=analyzedGrid.filter(c=>c.elevNorm<0.3);
+  const highElev=analyzedGrid.filter(c=>c.elevNorm>0.7);
+  const highFlow=analyzedGrid.filter(c=>c.flowAcc>2);
+  const solarHigh=analyzedGrid.filter(c=>c.solar==="solar_alto"||c.solar==="plano");
+  const shadeSide=analyzedGrid.filter(c=>c.solar==="sombra");
+
+  // Calcular centroide de cada grupo
+  const ctr=cells=>{
+    if(!cells.length)return null;
+    return{lat:cells.reduce((s,c)=>s+c.lat,0)/cells.length,lng:cells.reduce((s,c)=>s+c.lng,0)/cells.length,count:cells.length};
+  };
+
+  // Zona óptima para reservorio: baja elevación + alta acumulación de flujo
+  const reservoirCells=analyzedGrid.filter(c=>c.elevNorm<0.35&&c.flowAcc>1);
+  // Zona óptima para siembra: plano + orientación solar alta
+  const siembraCells=analyzedGrid.filter(c=>c.slope<8&&(c.solar==="solar_alto"||c.solar==="plano"));
+  // Zona óptima para cabañas: elevación alta + pendiente suave + sol
+  const cabanaCells=analyzedGrid.filter(c=>c.elevNorm>0.6&&c.slope<15&&c.solar!=="sombra");
+  // Zona óptima para ganado: plano o suave + sombra o solar medio
+  const ganadoCells=analyzedGrid.filter(c=>c.slope<12&&(c.solar==="sombra"||c.solar==="solar_bajo"||c.solar==="solar_medio"));
+  // Zona óptima para camino: sigue pendiente suave, evita zonas de flujo alto
+  const caminoCells=analyzedGrid.filter(c=>c.slope<10&&c.flowAcc<2);
+  // Bodega: cerca de acceso, terreno plano
+  const bodegaCells=analyzedGrid.filter(c=>c.slope<5&&c.elevNorm<0.6);
+  // Eventos/bar: elevación alta con vista
+  const eventosCells=analyzedGrid.filter(c=>c.elevNorm>0.55&&c.slope<20);
+
+  // Calcular área aproximada de cada zona
+  const b=dem.b;
+  const latM=111320,lngM=111320*Math.cos((b.minLat+b.maxLat)/2*Math.PI/180);
+  const cellArea=(b.maxLat-b.minLat)/ROWS*latM*(b.maxLng-b.minLng)/COLS*lngM;
+
+  const dirOf=(lat,lng)=>{
+    const ml=(b.minLat+b.maxLat)/2,mg=(b.minLng+b.maxLng)/2;
+    return(lat>ml?"norte":"sur")+(lng>mg?"este":"oeste");
+  };
+
+  const mkZone=(cells,id,fallback)=>{
+    const c=ctr(cells)||fallback;
+    if(!c)return null;
+    return{id,cells:cells.length,area_m2:Math.round(cells.length*cellArea),centroid:c,utm:latLngToUTM(c.lat,c.lng),dir:dirOf(c.lat,c.lng),slopeAvg:cells.length?cells.reduce((s,x)=>s+x.slope,0)/cells.length:0,elevAvg:cells.length?cells.reduce((s,x)=>s+x.elevNorm,0)/cells.length:0.5,flowAccAvg:cells.length?cells.reduce((s,x)=>s+x.flowAcc,0)/cells.length:0};
+  };
+
+  // POI-aware: si hay acceso vehicular, bodega debe estar cerca
+  let bodegaDir="centro";
+  if(pois?.length){
+    const acceso=pois.find(p=>p.type==="acceso");
+    if(acceso){const d=dirOf(acceso.lat,acceso.lng);bodegaDir=d;}
+  }
+
+  // Dividir zonas de siembra por tipo según orientación solar
+  const solarHighFlat=analyzedGrid.filter(c=>c.slope<8&&(c.solar==="solar_alto"||c.solar==="plano"));
+  const slopeGentleSouth=analyzedGrid.filter(c=>c.slope>=5&&c.slope<15&&c.solar==="solar_alto");
+  const flatNorth=analyzedGrid.filter(c=>c.slope<5&&(c.solar==="sombra"||c.solar==="solar_bajo"));
+
+  const zones={
+    lago:mkZone(reservoirCells,"lago",{lat:(b.minLat+b.maxLat)/2,lng:(b.minLng+b.maxLng)/2}),
+    siembra_olivos:mkZone(slopeGentleSouth,"siembra_olivos",null),
+    siembra_aguacate:mkZone(slopeGentleSouth.slice(Math.floor(slopeGentleSouth.length/2)),"siembra_aguacate",null),
+    siembra_alfalfa:mkZone(solarHighFlat,"siembra_alfalfa",null),
+    siembra_milpa:mkZone(solarHighFlat.slice(0,Math.floor(solarHighFlat.length*.6)),"siembra_milpa",null),
+    siembra_tuberculos:mkZone(flat.slice(0,Math.floor(flat.length*.3)),"siembra_tuberculos",null),
+    siembra_hortalizas:mkZone(flat.slice(0,Math.floor(flat.length*.2)),"siembra_hortalizas",null),
+    engorda_toros:mkZone(ganadoCells.slice(0,Math.floor(ganadoCells.length*.5)),"engorda_toros",null),
+    gallinas:mkZone(ganadoCells.slice(Math.floor(ganadoCells.length*.5),Math.floor(ganadoCells.length*.7)),"gallinas",null),
+    corderos:mkZone(ganadoCells.slice(Math.floor(ganadoCells.length*.7)),"corderos",null),
+    ordeña:mkZone(flat.slice(0,Math.floor(flat.length*.15)),"ordeña",null),
+    queso:mkZone(bodegaCells,"queso",null),
+    boutique:mkZone(eventosCells.slice(0,Math.floor(eventosCells.length*.3)),"boutique",null),
+    cabanas:mkZone(cabanaCells,"cabanas",null),
+    alberca:mkZone(cabanaCells.slice(0,Math.floor(cabanaCells.length*.3)),"alberca",null),
+    bar:mkZone(eventosCells.slice(Math.floor(eventosCells.length*.3),Math.floor(eventosCells.length*.6)),"bar",null),
+    eventos:mkZone(eventosCells,"eventos",null),
+    compostaje:mkZone(lowElev.filter(c=>c.slope<10),"compostaje",null),
+    bodegas:mkZone(bodegaCells,"bodegas",null),
+    camino:mkZone(caminoCells,"camino",null),
+    camino_interior:mkZone(caminoCells.slice(Math.floor(caminoCells.length/2)),"camino_interior",null),
+  };
+
+  // Estadísticas globales del terreno
+  const totalCells=analyzedGrid.length;
+  const stats={
+    pctFlat:Math.round(flat.length/totalCells*100),
+    pctGentle:Math.round(gentle.length/totalCells*100),
+    pctSteep:Math.round(steep.length/totalCells*100),
+    pctSolarHigh:Math.round(solarHigh.length/totalCells*100),
+    pctShade:Math.round(shadeSide.length/totalCells*100),
+    pctLowElev:Math.round(lowElev.length/totalCells*100),
+    pctHighElev:Math.round(highElev.length/totalCells*100),
+    sinkCount:highFlow.length,
+    elevRange:dem.hasAlt?`${Math.round(dem.minElev)}-${Math.round(dem.maxElev)} msnm`:"estimado",
+    hasAlt:dem.hasAlt,
+    reservoirSuitability:reservoirCells.length>0?"alta":lowElev.length>0?"media":"baja",
+    cropSuitability:siembraCells.length>0?"alta":flat.length>0?"media":"baja",
+  };
+
+  return{zones,stats,sinkCells:reservoirCells,siembraCells,cabanaCells};
+}
+
+// ── 6. ANÁLISIS COMPLETO ───────────────────────────────────────────────────
+function runFullAnalysis(points,pois=[]){
+  if(points.length<6)return null;
+  const dem=buildDEM(points);
+  if(!dem)return null;
+  const sloped=computeSlopes(dem);
+  const{flowAcc,sinks}=computeFlow(dem,sloped);
+  const solar=computeSolarAspect(flowAcc);
+  const zones=classifyZones(solar,dem,pois);
+  return{dem,sloped,flowAcc:solar,sinks,zones};
+}
+
+// ── Canvas map generator for PDF ──────────────────────────────────────────
+function generateMapImage(points,trees,analysis,pois,W=900,H=600){
+  const canvas=document.createElement("canvas");
+  canvas.width=W;canvas.height=H;
+  const ctx=canvas.getContext("2d");
+  const b=bnds([...points,...trees,...(pois||[])]);
+  if(!b)return null;
+
+  ctx.fillStyle="#0d1a0d";ctx.fillRect(0,0,W,H);
+
+  if(analysis?.flowAcc){
+    const{COLS,ROWS}=analysis.dem;
+    const cW=W/COLS,cH=H/ROWS;
+    analysis.flowAcc.forEach(cell=>{
+      const x=40+(cell.c+.5)*((W-80)/COLS);
+      const y=H-40-(cell.r+.5)*((H-80)/ROWS);
+      // Color por elevación normalizada
+      const e=cell.elevNorm;
+      const s=cell.slope;
+      let r2,g,bv;
+      if(s<5){r2=20+e*40;g=80+e*100;bv=20+e*30;}        // verde — plano
+      else if(s<15){r2=60+e*80;g=80+e*60;bv=10;}         // amarillo — suave
+      else{r2=120+e*80;g=40+e*20;bv=10;}                  // rojo — pronunciado
+      ctx.fillStyle=`rgba(${r2},${g},${bv},0.75)`;
+      ctx.fillRect(x-cW/2,y-cH/2,cW+1,cH+1);
+    });
+    // Flujo de agua — líneas azules
+    analysis.flowAcc.forEach(cell=>{
+      if(cell.flowAcc>2&&cell.flowTo){
+        const a=toCv({lat:cell.lat,lng:cell.lng},b,W,H,40);
+        const nc=analysis.flowAcc.find(x=>x.r===cell.flowTo.r&&x.c===cell.flowTo.c);
+        if(nc){
+          const c2=toCv({lat:nc.lat,lng:nc.lng},b,W,H,40);
+          ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(c2.x,c2.y);
+          ctx.strokeStyle=`rgba(30,144,255,${Math.min(cell.flowAcc/8,.8)})`;
+          ctx.lineWidth=Math.min(cell.flowAcc*.8,3);ctx.stroke();
+        }
+      }
+    });
+  }
+
+  // Grid lines
+  ctx.strokeStyle="rgba(255,255,255,.04)";ctx.lineWidth=.5;
+  for(let i=0;i<=24;i++){ctx.beginPath();ctx.moveTo(i*(W/24),0);ctx.lineTo(i*(W/24),H);ctx.stroke();ctx.beginPath();ctx.moveTo(0,i*(H/24));ctx.lineTo(W,i*(H/24));ctx.stroke();}
+
+  // Ruta GPS
+  if(points.length>1){
+    ctx.beginPath();ctx.strokeStyle="rgba(0,0,0,.4)";ctx.lineWidth=5;ctx.lineJoin="round";
+    points.forEach((p,i)=>{const{x,y}=toCv(p,b,W,H,40);i===0?ctx.moveTo(x+2,y+2):ctx.lineTo(x+2,y+2);});ctx.stroke();
+    ctx.beginPath();ctx.strokeStyle="#F5C842";ctx.lineWidth=3;ctx.lineJoin="round";
+    points.forEach((p,i)=>{const{x,y}=toCv(p,b,W,H,40);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);});ctx.stroke();
+  }
+
+  // Zonas óptimas con halos
+  if(analysis?.zones){
+    const zoneMap={lago:{color:"#1ABC9C",label:"Reservorio"},siembra:{color:"#4CAF50",label:"Siembra"},cabanas:{color:"#3498DB",label:"Cabañas"},eventos:{color:"#9B59B6",label:"Eventos"},bodegas:{color:"#708090",label:"Bodegas"}};
+    Object.entries(zoneMap).forEach(([id,{color,label}])=>{
+      const z=analysis.zones.zones[id];
+      if(!z)return;
+      const{x,y}=toCv(z.centroid,b,W,H,40);
+      const r=Math.min(30,8+Math.sqrt(z.area_m2)/30);
+      ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);
+      ctx.fillStyle=color+"44";ctx.strokeStyle=color+"cc";ctx.lineWidth=2;
+      ctx.fill();ctx.stroke();
+      ctx.font=`bold ${Math.min(13,r*.8)}px sans-serif`;ctx.textAlign="center";
+      ctx.fillStyle=color;ctx.fillText(ZONE_ICONS[id]||"",x,y-2);
+      ctx.font="9px sans-serif";ctx.fillStyle="#fff";ctx.fillText(label,x,y+12);
+    });
+  }
+
+  // POIs
+  (pois||[]).forEach(poi=>{
+    const{x,y}=toCv(poi,b,W,H,40);
+    ctx.beginPath();ctx.arc(x,y,10,0,Math.PI*2);ctx.fillStyle="#ff6600aa";ctx.fill();ctx.strokeStyle="#ff6600";ctx.lineWidth=2;ctx.stroke();
+    ctx.font="12px serif";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText(poi.icon||"📍",x,y);
+  });
+
+  // Árboles
+  trees.forEach(tree=>{
+    const{x,y}=toCv(tree,b,W,H,40);
+    const col=tree.size==="majestuoso"?"#1a7a2a":tree.size==="grande"?"#2a9a3a":tree.size==="mediano"?"#3ab050":"#60c060";
+    ctx.beginPath();ctx.arc(x,y,9,0,Math.PI*2);ctx.fillStyle=col;ctx.fill();ctx.strokeStyle="#fff";ctx.lineWidth=1.5;ctx.stroke();
+    ctx.font="11px serif";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText(tree.icon||"🌳",x,y);
+  });
+
+  // Punto inicio
+  if(points.length){
+    const s0=toCv(points[0],b,W,H,40);
+    ctx.beginPath();ctx.arc(s0.x,s0.y,9,0,Math.PI*2);ctx.fillStyle="#2ECC71";ctx.fill();ctx.strokeStyle="#fff";ctx.lineWidth=2;ctx.stroke();
+    ctx.font="bold 10px sans-serif";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillStyle="#fff";ctx.fillText("S",s0.x,s0.y);
+  }
+
+  // ── Flecha norte ──
+  const nx=W-38,ny=58;
+  ctx.save();
+  ctx.strokeStyle="#F5C842";ctx.fillStyle="#F5C842";ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(nx,ny-22);ctx.lineTo(nx,ny+10);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(nx,ny-22);ctx.lineTo(nx-7,ny-8);ctx.lineTo(nx,ny-15);ctx.lineTo(nx+7,ny-8);ctx.closePath();ctx.fill();
+  ctx.font="bold 13px sans-serif";ctx.textAlign="center";ctx.fillStyle="#F5C842";ctx.fillText("N",nx,ny+22);
+  ctx.restore();
+
+  // ── Barra de escala ──
+  const latC=(b.minLat+b.maxLat)/2;
+  const lngRng=b.maxLng-b.minLng;
+  const mPerLng=111320*Math.cos(latC*Math.PI/180);
+  const totalW_m=lngRng*mPerLng;
+  const pxPerM=(W-80)/totalW_m;
+  const scales=[5,10,20,50,100,200,500,1000,2000];
+  let scaleM=50;
+  for(const s of scales){if(s*pxPerM>50&&s*pxPerM<180){scaleM=s;break;}}
+  const scaleW=scaleM*pxPerM;
+  const sx=50,sy=H-18;
+  ctx.fillStyle="#00000088";ctx.fillRect(sx-4,sy-16,scaleW+50,22);
+  ctx.strokeStyle="#F5C842";ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(sx,sy);ctx.lineTo(sx+scaleW,sy);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(sx,sy-5);ctx.lineTo(sx,sy+3);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(sx+scaleW,sy-5);ctx.lineTo(sx+scaleW,sy+3);ctx.stroke();
+  ctx.font="bold 11px sans-serif";ctx.fillStyle="#F5C842";ctx.textAlign="left";
+  ctx.fillText(scaleM>=1000?`${scaleM/1000}km`:`${scaleM}m`,sx+scaleW+5,sy+4);
+
+  // UTM esquinas
+  const utmSW=latLngToUTM(b.minLat,b.minLng),utmNE=latLngToUTM(b.maxLat,b.maxLng);
+  ctx.font="9px sans-serif";ctx.fillStyle="rgba(200,220,180,.65)";
+  ctx.textAlign="left";ctx.fillText(`${utmSW.easting}E ${utmSW.northing}N`,6,H-5);
+  ctx.textAlign="right";ctx.fillText(`${utmNE.easting}E ${utmNE.northing}N`,W-6,13);
+
+  // Leyenda pendientes
+  [["#4CAF50","Plano <5%"],["#F1C40F","Suave 5-15%"],["#E74C3C","Pendiente >15%"],["#1E90FF","Escorrentía"]].forEach(([col,lbl],i)=>{
+    ctx.fillStyle=col;ctx.fillRect(8,8+i*17,12,12);
+    ctx.font="9px sans-serif";ctx.fillStyle="#ddd";ctx.textAlign="left";ctx.fillText(lbl,24,18+i*17);
+  });
+
+  return canvas.toDataURL("image/png");
+}
+
+// ── KML generator ──────────────────────────────────────────────────────────
+function generateKML(points,trees,pois,analysis,planName){
+  const b=bnds(points);
+  const utmC=centroid(points)?latLngToUTM(centroid(points).lat,centroid(points).lng):null;
+
+  const kmlPath=`<Placemark><name>Recorrido GPS</name><Style><LineStyle><color>ffF5C842</color><width>3</width></LineStyle></Style><LineString><coordinates>${points.map(p=>`${p.lng},${p.lat},${p.alt||0}`).join(" ")}</coordinates></LineString></Placemark>`;
+
+  const kmlTrees=trees.map(t=>{const utm=latLngToUTM(t.lat,t.lng);return`<Placemark><name>${t.icon||"🌳"} ${t.name}</name><description><![CDATA[<b>Especie:</b> ${t.typeLabel}<br><b>Tamaño:</b> ${t.size}<br><b>UTM:</b> ${utm.str}]]></description><Point><coordinates>${t.lng},${t.lat},0</coordinates></Point></Placemark>`;}).join("");
+
+  const kmlPois=(pois||[]).map(p=>`<Placemark><name>${p.icon||"📍"} ${p.label||p.type}</name><description><![CDATA[<b>Tipo:</b> ${p.type}<br><b>UTM:</b> ${latLngToUTM(p.lat,p.lng).str}]]></description><Point><coordinates>${p.lng},${p.lat},0</coordinates></Point></Placemark>`).join("");
+
+  let kmlZones="";
+  if(analysis?.zones){
+    Object.values(analysis.zones.zones).forEach(z=>{
+      if(!z)return;
+      kmlZones+=`<Placemark><name>${ZONE_ICONS[z.id]||""} ${z.id}</name><description><![CDATA[<b>Área:</b> ${z.area_m2?.toLocaleString()} m²<br><b>Pendiente promedio:</b> ${z.slopeAvg?.toFixed(1)}%<br><b>UTM:</b> ${z.utm?.str}]]></description><Point><coordinates>${z.centroid?.lng},${z.centroid?.lat},0</coordinates></Point></Placemark>`;
+    });
+  }
+
+  // Sumideros hidrológicos
+  let kmlSinks="";
+  if(analysis?.sinks?.length){
+    analysis.sinks.slice(0,5).forEach((s,i)=>{
+      kmlSinks+=`<Placemark><name>💧 Sumidero hídrico ${i+1}</name><description><![CDATA[Zona de convergencia de escorrentía — candidato a reservorio<br>Acumulación de flujo: ${s.flowAcc} celdas]]></description><Point><coordinates>${s.lng},${s.lat},0</coordinates></Point></Placemark>`;
+    });
+  }
+
+  return`<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+  <name>RanchoPlan — ${planName}</name>
+  <description><![CDATA[Master Plan · Los Altos de Jalisco · ${new Date().toLocaleDateString("es-MX")}<br>${utmC?`Centro UTM: ${utmC.str}`:""}<br>Sistema: UTM WGS84]]></description>
+  <Folder><name>Recorrido GPS</name>${kmlPath}</Folder>
+  <Folder><name>Puntos de Interés</name>${kmlPois}</Folder>
+  <Folder><name>Árboles (${trees.length})</name>${kmlTrees}</Folder>
+  <Folder><name>Zonas Óptimas (Análisis Topográfico)</name>${kmlZones}</Folder>
+  <Folder><name>Sumideros Hidrológicos</name>${kmlSinks}</Folder>
+</Document></kml>`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// APP COMPONENT
+// ══════════════════════════════════════════════════════════════════════════
+function App(){
+  const [phase,setPhase]=useState("home");
+  const [points,setPoints]=useState([]);
+  const [trees,setTrees]=useState([]);
+  const [pois,setPois]=useState([]);
+  const [isTracking,setIsTracking]=useState(false);
+  const [masterPlan,setMasterPlan]=useState(null);
+  const [analysis,setAnalysis]=useState(null);
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState("");
+  const [selV,setSelV]=useState(0);
+  const [demoMode,setDemoMode]=useState(false);
+  const [mapLayer,setMapLayer]=useState("dem");
+  const [treeModal,setTreeModal]=useState(false);
+  const [poiModal,setPoiModal]=useState(false);
+  const [pendingPos,setPendingPos]=useState(null);
+  const [treeType,setTreeType]=useState("");
+  const [treeSize,setTreeSize]=useState("");
+  const [treeName,setTreeName]=useState("");
+  const [poiType,setPoiType]=useState("");
+  const [poiName,setPoiName]=useState("");
+  const canvasRef=useRef(null);
+  const animRef=useRef(null);
+  const demoRef=useRef(null);
+  const watchRef=useRef(null);
+
+  // ── GPS ──
+  const startGPS=useCallback(()=>{
+    if(!navigator.geolocation){setError("GPS no disponible.");return;}
+    setIsTracking(true);
+    const id=navigator.geolocation.watchPosition(
+      pos=>{
+        const pt={lat:pos.coords.latitude,lng:pos.coords.longitude,acc:pos.coords.accuracy,alt:pos.coords.altitude,t:Date.now()};
+        setPoints(prev=>{if(prev.length>0&&hav(prev[prev.length-1],pt)<2)return prev;return[...prev,pt];});
+      },
+      err=>{
+        let msg=err.message;
+        if(err.code===1)msg="Permiso denegado. Ajustes > Safari > Ubicación.";
+        if(err.code===2)msg="Sin señal GPS. Sal al exterior.";
+        if(err.code===3)msg="Tiempo agotado. Intenta de nuevo.";
+        setError(msg);setIsTracking(false);
+      },
+      {enableHighAccuracy:true,maximumAge:0,timeout:20000}
+    );
+    watchRef.current=id;
+  },[]);
+
+  const stopGPS=useCallback(()=>{
+    if(watchRef.current!=null){navigator.geolocation.clearWatch(watchRef.current);watchRef.current=null;}
+    setIsTracking(false);
+  },[]);
+
+  // ── Demo con datos densos ──
+  const startDemo=useCallback(()=>{
+    setDemoMode(true);setPoints([]);setTrees([]);setPois([]);setIsTracking(true);
+    const cLat=20.9003,cLng=-102.2990;
+    // Simular barrido en cuadrícula — franjas norte-sur cada ~10m
+    const path=[];
+    for(let col=0;col<8;col++){
+      const lng=cLng+col*0.00009;
+      const going=col%2===0;
+      for(let row=0;row<12;row++){
+        const r=going?row:11-row;
+        const lat=cLat+r*0.00008;
+        // Simular terreno: ladera suave de NW a SE
+        const alt=1820+col*2+r*1.5+(Math.sin(col*.8)*3)+(Math.cos(r*.6)*2);
+        path.push({lat,lng,alt,t:Date.now()-(((8-col)*12+(going?11-row:row))*4000)});
+      }
+    }
+    const dTrees=[
+      {lat:cLat+.0004,lng:cLng+.0003,type:"encino",typeLabel:"Encino",icon:"🌲",size:"majestuoso",name:"Encino grande NW"},
+      {lat:cLat+.0007,lng:cLng+.0005,type:"mezquite",typeLabel:"Mezquite",icon:"🌳",size:"grande",name:"Mezquite centro"},
+      {lat:cLat+.0002,lng:cLng+.0006,type:"nopal",typeLabel:"Nopal",icon:"🌵",size:"mediano",name:"Nopalera SE"},
+      {lat:cLat+.0006,lng:cLng+.00015,type:"fresno",typeLabel:"Fresno",icon:"🌳",size:"grande",name:"Fresno junto al arroyo"},
+    ];
+    const demoPois=[
+      {lat:cLat+.00005,lng:cLng+.00005,type:"acceso",label:"Entrada vehicular",icon:"🚗"},
+      {lat:cLat+.0003,lng:cLng+.0007,type:"jagüey",label:"Jagüey existente",icon:"🌊"},
+    ];
+    let i=0;
+    demoRef.current=setInterval(()=>{
+      if(i<path.length){
+        setPoints(prev=>[...prev,{...path[i],acc:4}]);
+        i++;
+        if(i===path.length){
+          setTrees(dTrees);setPois(demoPois);
+          clearInterval(demoRef.current);setIsTracking(false);
+        }
+      }
+    },60);
+  },[]);
+
+  const stopDemo=useCallback(()=>{clearInterval(demoRef.current);setIsTracking(false);setDemoMode(false);},[]);
+
+  // Recomputar análisis cuando cambian los puntos
+  useEffect(()=>{
+    if(points.length>=12){
+      const a=runFullAnalysis(points,pois);
+      setAnalysis(a);
+    }
+  },[points,pois]);
+
+  // ── Marcar árbol ──
+  const handleMarkTree=useCallback(()=>{
+    const getPos=cb=>{
+      if(demoMode){const last=points[points.length-1]||{lat:20.9,lng:-102.299};cb({lat:last.lat+(Math.random()-.5)*0.0001,lng:last.lng+(Math.random()-.5)*0.0001});}
+      else if(navigator.geolocation)navigator.geolocation.getCurrentPosition(pos=>cb({lat:pos.coords.latitude,lng:pos.coords.longitude}),()=>cb(points[points.length-1]));
+    };
+    getPos(pos=>{setPendingPos(pos);setTreeType("");setTreeSize("");setTreeName("");setTreeModal(true);});
+  },[demoMode,points]);
+
+  const confirmTree=()=>{
+    if(!treeType||!treeSize){setError("Selecciona tipo y tamaño.");return;}
+    const to=TREE_TYPES.find(t=>t.id===treeType);
+    setTrees(prev=>[...prev,{...pendingPos,type:treeType,typeLabel:to?.label||treeType,icon:to?.icon||"🌱",size:treeSize,name:treeName||(to?.label+" #"+(prev.length+1)),t:Date.now()}]);
+    setTreeModal(false);
+  };
+
+  // ── Marcar POI ──
+  const handleMarkPOI=useCallback(()=>{
+    const getPos=cb=>{
+      if(demoMode){const last=points[points.length-1]||{lat:20.9,lng:-102.299};cb({lat:last.lat+(Math.random()-.5)*0.0001,lng:last.lng+(Math.random()-.5)*0.0001});}
+      else if(navigator.geolocation)navigator.geolocation.getCurrentPosition(pos=>cb({lat:pos.coords.latitude,lng:pos.coords.longitude}),()=>cb(points[points.length-1]));
+    };
+    getPos(pos=>{setPendingPos(pos);setPoiType("");setPoiName("");setPoiModal(true);});
+  },[demoMode,points]);
+
+  const confirmPOI=()=>{
+    if(!poiType){setError("Selecciona tipo de punto.");return;}
+    const to=POI_TYPES.find(t=>t.id===poiType);
+    setPois(prev=>[...prev,{...pendingPos,type:poiType,label:poiName||to?.label||poiType,icon:to?.icon||"📍",t:Date.now()}]);
+    setPoiModal(false);
+  };
+
+  // ── Canvas ──
+  useEffect(()=>{
+    const canvas=canvasRef.current;
+    cancelAnimationFrame(animRef.current);
+    if(!canvas)return;
+    const ctx=canvas.getContext("2d");
+    const W=canvas.width,H=canvas.height;
+    // Always clear first
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle="#0a1a0a";
+    ctx.fillRect(0,0,W,H);
+    if(points.length<2)return;
+    const allPts=[...points,...trees,...pois];
+    const b=bnds(allPts.length?allPts:points);
+    if(!b)return;
+
+    // Render DEM/slope/flow
+    if(analysis?.flowAcc&&mapLayer!=="gps"){
+      const{COLS,ROWS}=analysis.dem;
+      const cW=W/COLS,cH=H/ROWS;
+      analysis.flowAcc.forEach(cell=>{
+        const{x,y}=toCv({lat:cell.lat,lng:cell.lng},b,W,H,32);
+        let col;
+        if(mapLayer==="dem"){
+          const e=cell.elevNorm;
+          const s=cell.slope;
+          if(s<5){const g=Math.floor(40+e*80);col=`rgba(20,${g},20,.7)`;}
+          else if(s<15){const v=Math.floor(80+e*60);col=`rgba(${v},${v},10,.7)`;}
+          else{col=`rgba(${Math.floor(120+cell.elevNorm*80)},30,10,.7)`;}
+        }else if(mapLayer==="slope"){
+          col=cell.slope<5?"rgba(46,204,113,.65)":cell.slope<15?"rgba(241,196,15,.65)":"rgba(231,76,60,.65)";
+        }else if(mapLayer==="solar"){
+          const sc={plano:"rgba(255,220,50,.6)",solar_alto:"rgba(255,140,0,.65)",solar_medio:"rgba(200,200,50,.5)",solar_bajo:"rgba(100,180,100,.5)",sombra:"rgba(60,80,140,.6)",neutro:"rgba(100,100,100,.3)"};
+          col=sc[cell.solar]||"rgba(100,100,100,.3)";
+        }else if(mapLayer==="hidro"){
+          const a=Math.min(cell.flowAcc/8,.9);
+          col=cell.flowAcc>0?`rgba(30,100,220,${.15+a*.7})`:"rgba(20,40,20,.3)";
+        }
+        ctx.fillStyle=col;ctx.fillRect(x-cW/2,y-cH/2,cW+1,cH+1);
+      });
+      // Flujo de agua
+      if(mapLayer==="hidro"||mapLayer==="dem"){
+        analysis.flowAcc.forEach(cell=>{
+          if(cell.flowAcc>1&&cell.flowTo){
+            const nc=analysis.flowAcc.find(x=>x.r===cell.flowTo.r&&x.c===cell.flowTo.c);
+            if(nc){const a=toCv({lat:cell.lat,lng:cell.lng},b,W,H,32),c2=toCv({lat:nc.lat,lng:nc.lng},b,W,H,32);ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(c2.x,c2.y);ctx.strokeStyle=`rgba(30,144,255,${Math.min(cell.flowAcc/6,.7)})`;ctx.lineWidth=Math.min(cell.flowAcc*.7,2.5);ctx.stroke();}
+          }
+        });
+      }
+    }
+
+    // Grid
+    ctx.strokeStyle="rgba(255,255,255,.04)";ctx.lineWidth=.4;
+    for(let i=0;i<=20;i++){ctx.beginPath();ctx.moveTo(i*(W/20),0);ctx.lineTo(i*(W/20),H);ctx.stroke();ctx.beginPath();ctx.moveTo(0,i*(H/20));ctx.lineTo(W,i*(H/20));ctx.stroke();}
+
+    // Ruta GPS
+    ctx.beginPath();ctx.strokeStyle="rgba(0,0,0,.4)";ctx.lineWidth=4;ctx.lineJoin="round";
+    points.forEach((p,i)=>{const{x,y}=toCv(p,b,W,H,32);i===0?ctx.moveTo(x+2,y+2):ctx.lineTo(x+2,y+2);});ctx.stroke();
+    ctx.beginPath();ctx.strokeStyle="#F5C842";ctx.lineWidth=2;ctx.lineJoin="round";
+    points.forEach((p,i)=>{const{x,y}=toCv(p,b,W,H,32);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);});ctx.stroke();
+
+    // Zonas óptimas calculadas
+    if(analysis?.zones&&mapLayer==="dem"){
+      const show={lago:"#1ABC9C",siembra:"#4CAF50",cabanas:"#3498DB",eventos:"#9B59B6"};
+      Object.entries(show).forEach(([id,col])=>{
+        const z=analysis.zones.zones[id];
+        if(!z?.centroid)return;
+        const{x,y}=toCv(z.centroid,b,W,H,32);
+        const r=Math.max(14,Math.min(22,Math.sqrt(z.area_m2)/25));
+        ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fillStyle=col+"55";ctx.strokeStyle=col+"cc";ctx.lineWidth=2;ctx.fill();ctx.stroke();
+        ctx.font=`${Math.min(14,r*.8)}px serif`;ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText(ZONE_ICONS[id]||"",x,y);
+      });
+    }
+
+    // POIs
+    pois.forEach(poi=>{
+      const{x,y}=toCv(poi,b,W,H,32);
+      ctx.beginPath();ctx.arc(x,y,10,0,Math.PI*2);ctx.fillStyle="#ff660099";ctx.fill();ctx.strokeStyle="#ff6600";ctx.lineWidth=2;ctx.stroke();
+      ctx.font="11px serif";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText(poi.icon||"📍",x,y);
+    });
+
+    // Árboles
+    trees.forEach(tree=>{
+      const{x,y}=toCv(tree,b,W,H,32);
+      const col=tree.size==="majestuoso"?"#1a7a2a":tree.size==="grande"?"#2a9a3a":tree.size==="mediano"?"#3ab050":"#60c060";
+      ctx.beginPath();ctx.arc(x,y,8,0,Math.PI*2);ctx.fillStyle=col;ctx.fill();ctx.strokeStyle="#fff";ctx.lineWidth=1.5;ctx.stroke();
+      ctx.font="10px serif";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText(tree.icon||"🌳",x,y);
+    });
+
+    // Marcador inicio
+    if(points.length){
+      const s0=toCv(points[0],b,W,H,32);
+      ctx.beginPath();ctx.arc(s0.x,s0.y,8,0,Math.PI*2);ctx.fillStyle="#2ECC71";ctx.fill();ctx.strokeStyle="#fff";ctx.lineWidth=2;ctx.stroke();
+      ctx.font="bold 9px sans-serif";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillStyle="#fff";ctx.fillText("S",s0.x,s0.y);
+    }
+
+    // Marcador actual
+    const en=toCv(points[points.length-1],b,W,H,32);
+    ctx.beginPath();ctx.arc(en.x,en.y,8,0,Math.PI*2);ctx.fillStyle=isTracking?"#E74C3C":"#3498DB";ctx.fill();ctx.strokeStyle="#fff";ctx.lineWidth=2;ctx.stroke();
+    if(isTracking){
+      let pr={r:10,d:1};
+      const anim=()=>{ctx.clearRect(en.x-32,en.y-32,64,64);pr.r+=pr.d*.5;if(pr.r>22||pr.r<10)pr.d*=-1;ctx.beginPath();ctx.arc(en.x,en.y,pr.r,0,Math.PI*2);ctx.strokeStyle=`rgba(231,76,60,${1-(pr.r-10)/12})`;ctx.lineWidth=2;ctx.stroke();ctx.beginPath();ctx.arc(en.x,en.y,8,0,Math.PI*2);ctx.fillStyle="#E74C3C";ctx.fill();ctx.strokeStyle="#fff";ctx.lineWidth=2;ctx.stroke();animRef.current=requestAnimationFrame(anim);};
+      animRef.current=requestAnimationFrame(anim);
+    }
+
+    // Flecha norte
+    ctx.save();ctx.strokeStyle="#F5C842cc";ctx.fillStyle="#F5C842";ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(W-24,18);ctx.lineTo(W-24,38);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(W-24,18);ctx.lineTo(W-29,27);ctx.lineTo(W-24,23);ctx.lineTo(W-19,27);ctx.closePath();ctx.fill();
+    ctx.font="bold 9px sans-serif";ctx.textAlign="center";ctx.fillStyle="#F5C842";ctx.fillText("N",W-24,46);
+    ctx.restore();
+
+    return()=>cancelAnimationFrame(animRef.current);
+  },[points,trees,pois,isTracking,mapLayer,analysis]);
+
+  // ── Generar Master Plan ──
+  const generatePlan=async()=>{
+    setLoading(true);setError("");
+    const b=bnds(points);const dist=totalDist(points);
+    const area=((b.maxLat-b.minLat)*111000*(b.maxLng-b.minLng)*111000*Math.cos(b.minLat*Math.PI/180)).toFixed(0);
+    const utmC=centroid(points)?latLngToUTM(centroid(points).lat,centroid(points).lng):null;
+
+    const az=analysis?.zones;
+    const as=analysis?.zones?.stats;
+
+    // Construir descripción topográfica detallada desde el análisis real
+    const topoDesc=az?`
+ANÁLISIS TOPOGRÁFICO REAL (DEM interpolado de ${points.length} puntos GPS):
+- Terreno plano (<5%): ${as.pctFlat}% del predio
+- Pendiente suave (5-15%): ${as.pctGentle}%
+- Pendiente pronunciada (>15%): ${as.pctSteep}%
+- Orientación solar alta (sur): ${as.pctSolarHigh}% del predio
+- Zonas de sombra (norte): ${as.pctShade}%
+- Zona baja (potencial reservorio): ${as.pctLowElev}% del predio
+- Zona alta (vistas/cabañas): ${as.pctHighElev}%
+- Convergencias hidrológicas detectadas: ${as.sinkCount} zonas de acumulación de escorrentía
+- Altitud: ${as.elevRange} | Aptitud para reservorio: ${as.reservoirSuitability} | Aptitud para cultivos: ${as.cropSuitability}
+- ${as.hasAlt?"Altímetro real del iPhone usado":"Síntesis por velocidad de caminata"}
+
+ZONAS ÓPTIMAS CALCULADAS POR ALGORITMO:
+${Object.entries(az.zones).filter(([,z])=>z).map(([id,z])=>`- ${id}: ${z.area_m2?.toLocaleString()} m² al ${z.dir}, pendiente prom ${z.slopeAvg?.toFixed(1)}%, UTM ${z.utm?.str}`).join("\n")}
+`:`
+ANÁLISIS BÁSICO: ${points.length} puntos GPS registrados. Área ~${(area/10000).toFixed(2)} ha.
+`;
+
+    const poisDesc=pois.length?`\nPUNTOS DE INTERÉS MARCADOS:\n${pois.map(p=>`- ${p.label} (${p.type}) en UTM ${latLngToUTM(p.lat,p.lng).str}`).join("\n")}`:"";
+    const treesDesc=trees.length?`\nÁRBOLES (${trees.length}):\n${trees.map(t=>`- ${t.typeLabel} ${t.size}: ${t.name}`).join("\n")}`:"";
+
+    const prompt=`Eres experto planificador de ranchos en Los Altos de Jalisco, México. Usa EXCLUSIVAMENTE los datos topográficos reales para justificar cada decisión de zonificación.
+
+PREDIO:
+- Perímetro: ${dist.toFixed(0)} m | Área: ${(area/10000).toFixed(2)} ha
+- Centro UTM: ${utmC?utmC.str:"N/A"} | Zona ${utmC?utmC.zone+""+utmC.hem:""}
+${topoDesc}${poisDesc}${treesDesc}
+
+PROGRAMA PRODUCTIVO DEL RANCHO — incluye TODAS estas zonas con dimensiones mínimas reales:
+
+SIEMBRAS (orientación solar sur preferida, terreno plano <8%):
+- siembra_olivos: mínimo 2,000 m² (marco real 6x6m, 55 árboles/ha) — ladera suave, drenaje
+- siembra_aguacate: mínimo 2,500 m² (marco 8x8m, criollo+hass) — pendiente 5-15%, sin heladas
+- siembra_alfalfa: mínimo 3,000 m² (corte cada 28 días) — terreno plano, riego disponible
+- siembra_milpa: mínimo 2,000 m² (maíz-frijol-calabaza, policultivo tradicional) — terreno plano
+- siembra_tuberculos: mínimo 800 m² (papa y camote, rotación) — suelo suelto, pendiente <5%
+- siembra_hortalizas: mínimo 600 m² (huerto intensivo variado) — cerca de agua, acceso fácil
+
+GANADERÍA (bienestar animal, espacio mínimo reglamentario):
+- engorda_toros: 20 toros semi-estabulados → mínimo 4,000 m² corral + 2,000 m² área techada (20m²/animal cubierto + 200m²/animal pastoreo). Orientación norte para sombra. Cerca de bodega y camino.
+- gallinas: 300 gallinas → mínimo 900 m² total (3m²/gallina exterior + 1m² interior). Incluye gallinero techado 300m², patio cubierto 300m², área libre 300m². Orientación oriente-poniente.
+- corderos: 500 pie de cría → mínimo 5,000 m² (10m²/animal). Incluye corral techado, área de partos separada, embarcadero. Orientación protegida de vientos.
+- ordeña: 5 vacas jersey → mínimo 800 m² (sala de ordeña 80m² + corral espera 200m² + prado rotacional 500m²). Acceso fácil, piso firme, agua abundante.
+
+AGROINDUSTRIA Y COMERCIO (cerca de acceso vehicular, estética cuidada):
+- queso: producción de queso + limpieza de huevo → mínimo 120 m² (sala fría, área húmeda, almacén)
+- boutique: venta de productos del campo + café → mínimo 150 m² con área de mesas exterior, estética alteña
+- bodegas: almacén general + taller → mínimo 300 m²
+- compostaje: área de compostaje → mínimo 200 m², alejado de cabañas y boutique, bajoviento
+
+TURISMO Y BIENESTAR:
+- cabanas: área de cabañas turísticas → zona alta con vista, pendiente suave
+- alberca: junto a cabañas, orientación sur para sol
+- bar: bar/área social exterior → vista panorámica, cerca de cabañas
+- eventos: salón/área de eventos → acceso, terreno plano, estética
+- lago: reservorio ornamental + captación → zona de convergencia hídrica natural
+
+INFRAESTRUCTURA:
+- camino: camino principal → siguiendo curvas de nivel, pendiente <8%
+- camino_interior: caminos secundarios entre zonas
+
+Para CADA zona indica: área_m2 exacta justificada, pendiente ideal, orientación solar, distancia funcional a otras zonas clave (ej: "queso debe estar a menos de 100m de ordeña"). Diseña para que sea ESTÉTICO visualmente: agrupar zonas afines, crear vistas, usar árboles existentes como separadores naturales.
+
+SOLO JSON:
+{"variantes":[{"nombre":"string","descripcion":"string","topografia_aprovechada":"string","arboles_integrados":"string","zonas":[{"id":"camino|camino_interior|siembra_olivos|siembra_aguacate|siembra_alfalfa|siembra_milpa|siembra_tuberculos|siembra_hortalizas|engorda_toros|gallinas|corderos|ordeña|queso|boutique|cabanas|lago|alberca|bar|eventos|compostaje|bodegas","nombre":"string","ubicacion":"norte|sur|este|oeste|centro|noreste|noroeste|sureste|suroeste","justificacion":"string con topografía + lógica productiva + estética","area_m2":0,"prioridad":"alta|media|baja","pendiente_pct":0,"orientacion_solar":"string","distancia_a":"string (zona cercana requerida)","notas_bienestar":"string"}],"fases":[{"fase":1,"nombre":"string","duracion":"string","inversion_mxn":0}],"consideraciones":["string"],"ventajas":["string"],"inversion_total_mxn":0}]}`;
+
+    try{
+      const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:6000,messages:[{role:"user",content:prompt}]})});
+      const data=await res.json();
+      const txt=data.content.map(x=>x.text||"").join("");
+      setMasterPlan(JSON.parse(txt.replace(/```json|```/g,"").trim()));
+      setPhase("masterplan");
+    }catch(e){
+      const msg=e.message||"";
+      if(msg.includes("Failed to fetch")||msg.includes("Load failed")||msg.includes("NetworkError")){
+        setError("❌ Esta plataforma bloquea la API. Abre la app desde Glitch.com o un servidor HTTPS propio. El demo funciona pero la generación del plan necesita conexión directa.");
+      } else {
+        setError("Error: "+msg);
+      }
+    }
+    finally{setLoading(false);}
+  };
+
+  // ── PDF ──
+  const exportPDF=()=>{
+    if(!masterPlan)return;
+    const v=masterPlan.variantes[selV];
+    const b=bnds(points);const dist=totalDist(points);
+    const area=b?((b.maxLat-b.minLat)*111000*(b.maxLng-b.minLng)*111000*Math.cos(b.minLat*Math.PI/180)).toFixed(0):0;
+    const utmC=centroid(points)?latLngToUTM(centroid(points).lat,centroid(points).lng):null;
+    const utmSW=b?latLngToUTM(b.minLat,b.minLng):null;
+    const utmNE=b?latLngToUTM(b.maxLat,b.maxLng):null;
+    const as=analysis?.zones?.stats;
+    const mapImg=generateMapImage(points,trees,analysis,pois,900,580);
+    const treesByType={};trees.forEach(tr=>{treesByType[tr.typeLabel]=(treesByType[tr.typeLabel]||0)+1;});
+
+    const zonesRows=v.zonas?.map(z=>{
+      const az=analysis?.zones?.zones[z.id];
+      const utmStr=az?.utm?.str||"—";
+      const slopeStr=z.pendiente_pct!=null?`${z.pendiente_pct}%`:az?.slopeAvg!=null?`${az.slopeAvg.toFixed(1)}%`:"—";
+      const col=ZONE_COLORS[z.id]||"#888";
+      return`<tr>
+        <td><span style="display:inline-block;width:10px;height:10px;background:${col};border-radius:2px;margin-right:4px;vertical-align:middle"></span>${ZONE_ICONS[z.id]||""} ${z.nombre}</td>
+        <td>${z.ubicacion}</td>
+        <td>${(z.area_m2||0).toLocaleString()} m²</td>
+        <td style="font-size:8px;font-family:monospace;color:#444">${utmStr}</td>
+        <td>${slopeStr}</td>
+        <td style="font-size:9px">${z.orientacion_solar||"—"}</td>
+        <td style="font-size:9px">${z.justificacion}</td>
+        <td style="color:${z.prioridad==="alta"?"#c8a000":z.prioridad==="media"?"#2d7a27":"#888"};font-weight:700;font-size:9px">${z.prioridad}</td>
+        <td style="font-size:8px;color:#456">${[z.notas_bienestar,z.distancia_a].filter(Boolean).join(" · ")||"—"}</td>
+      </tr>`;
+    }).join("");
+
+    const treeRows=trees.map(tr=>{const utm=latLngToUTM(tr.lat,tr.lng);return`<tr><td>${tr.icon} ${tr.name}</td><td>${tr.typeLabel}</td><td>${tr.size}</td><td style="font-size:8px;font-family:monospace">${utm.str}</td></tr>`;}).join("");
+    const poiRows=pois.map(p=>{const utm=latLngToUTM(p.lat,p.lng);return`<tr><td>${p.icon} ${p.label}</td><td>${p.type}</td><td style="font-size:8px;font-family:monospace">${utm.str}</td></tr>`;}).join("");
+
+    const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Master Plan — ${v.nombre}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:Georgia,serif;color:#1a1a1a;font-size:11px}
+.cover{background:linear-gradient(135deg,#1a3a1a,#2d6a27 55%,#1a3a1a);color:#fff;padding:44px 48px;page-break-after:always}
+.cover h1{font-size:24px;margin-bottom:7px;letter-spacing:1px}.cover h2{font-size:12px;font-weight:400;opacity:.8;line-height:1.65;margin-bottom:16px}
+.meta{display:grid;grid-template-columns:repeat(6,1fr);gap:7px;margin-top:12px}
+.val{font-size:17px;font-weight:700;color:#F5C842}.lbl{font-size:8px;opacity:.6;text-transform:uppercase;letter-spacing:1px}
+.utm-box{background:rgba(255,255,255,.1);border-radius:6px;padding:8px 12px;margin-top:10px;font-size:9px;opacity:.9;line-height:1.7}
+.topo-box{background:rgba(255,255,255,.07);border-radius:6px;padding:8px 12px;margin-top:8px;font-size:9px;opacity:.85;display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.topo-item .tv{font-size:16px;font-weight:700;color:#F5C842}.topo-item .tl{font-size:8px;opacity:.6;text-transform:uppercase}
+.content{padding:28px 44px}
+h3{font-size:12px;color:#1a5c1a;margin:16px 0 5px;border-bottom:1px solid #d0ecc0;padding-bottom:3px}
+p{margin:0 0 7px;line-height:1.7}table{width:100%;border-collapse:collapse;margin:5px 0 12px;font-size:10px}
+th{background:#2d6a27;color:#fff;padding:5px 7px;text-align:left;font-size:9px}td{padding:3px 7px;border-bottom:1px solid #eee;vertical-align:top}
+.map-container{margin:10px 0;border:1px solid #cde;border-radius:5px;overflow:hidden;page-break-inside:avoid}
+.map-container img{width:100%;display:block}.map-caption{background:#f0f7f0;padding:5px 9px;font-size:8px;color:#456;display:flex;justify-content:space-between}
+.chip{display:inline-block;padding:2px 7px;border-radius:10px;font-size:9px;margin:2px;background:#e8f5e2;color:#1a5c1a;font-weight:600}
+.footer{margin-top:20px;padding-top:9px;border-top:1px solid #ddd;font-size:8px;color:#999;display:flex;justify-content:space-between}
+@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}.cover{-webkit-print-color-adjust:exact}}
+</style></head><body>
+<div class="cover">
+  <div style="font-size:8px;opacity:.45;text-transform:uppercase;letter-spacing:3px;margin-bottom:9px">Rancho Los Altos de Jalisco · Master Plan · UTM WGS84</div>
+  <h1>${v.nombre}</h1><h2>${v.descripcion}</h2>
+  <div class="meta">
+    <div><div class="val">${(area/10000).toFixed(2)} ha</div><div class="lbl">Área</div></div>
+    <div><div class="val">${dist.toFixed(0)} m</div><div class="lbl">Perímetro</div></div>
+    <div><div class="val">${trees.length}</div><div class="lbl">Árboles</div></div>
+    <div><div class="val">${pois.length}</div><div class="lbl">Puntos interés</div></div>
+    <div><div class="val">${as?as.pctFlat+"%" :"—"}</div><div class="lbl">Zona plana</div></div>
+    <div><div class="val">$${((v.inversion_total_mxn||0)/1e6).toFixed(1)}M</div><div class="lbl">MXN</div></div>
+  </div>
+  ${as?`<div class="topo-box">
+    <div class="topo-item"><div class="tv">${as.pctSolarHigh}%</div><div class="tl">Orientación solar alta</div></div>
+    <div class="topo-item"><div class="tv">${as.pctShade}%</div><div class="tl">Zona de sombra</div></div>
+    <div class="topo-item"><div class="tv">${as.sinkCount}</div><div class="tl">Convergencias hídricas</div></div>
+    <div class="topo-item"><div class="tv">${as.elevRange}</div><div class="tl">Altitud</div></div>
+  </div>`:""}
+  <div class="utm-box">
+    📍 <strong>UTM WGS84 Zona ${utmC?utmC.zone+""+utmC.hem:"—"}</strong><br>
+    Centro: ${utmC?utmC.str:"N/A"} &nbsp;·&nbsp; SW: ${utmSW?utmSW.str:"N/A"} &nbsp;·&nbsp; NE: ${utmNE?utmNE.str:"N/A"}
+  </div>
+</div>
+<div class="content">
+  <h3>PLANO TOPOGRÁFICO Y ZONIFICACIÓN</h3>
+  ${mapImg?`<div class="map-container"><img src="${mapImg}" alt="Plano topográfico"/><div class="map-caption"><span>🟢 Plano &lt;5% · 🟡 Suave 5-15% · 🔴 Pendiente &gt;15% · 🔵 Escorrentía · ${ZONE_ICONS.lago} Reservorio · ${ZONE_ICONS.siembra} Siembra · ${ZONE_ICONS.cabanas} Cabañas · 🌳 Árboles · 🔶 Puntos de interés</span><span>UTM ${utmC?utmC.zone+""+utmC.hem:""}</span></div></div>`:""}
+
+  ${as?`<h3>ANÁLISIS TOPOGRÁFICO DEL PREDIO</h3>
+  <table>
+    <tr><th>Parámetro</th><th>Valor</th><th>Implicación para el master plan</th></tr>
+    <tr><td>Zona plana (&lt;5%)</td><td>${as.pctFlat}%</td><td>Aptitud para cultivos: <strong>${as.cropSuitability}</strong></td></tr>
+    <tr><td>Pendiente suave (5-15%)</td><td>${as.pctGentle}%</td><td>Apta para ganadería extensiva y caminos</td></tr>
+    <tr><td>Pendiente pronunciada (&gt;15%)</td><td>${as.pctSteep}%</td><td>Conservación de suelo, cortinas rompevientos</td></tr>
+    <tr><td>Orientación solar sur (alta insolación)</td><td>${as.pctSolarHigh}%</td><td>Óptimo para frutales, hortalizas, alfalfa</td></tr>
+    <tr><td>Orientación norte (sombra)</td><td>${as.pctShade}%</td><td>Confort térmico para animales y cabañas</td></tr>
+    <tr><td>Zonas de convergencia hídrica</td><td>${as.sinkCount} celdas</td><td>Aptitud reservorio: <strong>${as.reservoirSuitability}</strong></td></tr>
+    <tr><td>Elevación del terreno</td><td>${as.elevRange}</td><td>${as.hasAlt?"Altímetro real del iPhone":"Síntesis por velocidad de caminata"}</td></tr>
+    <tr><td>Puntos GPS registrados</td><td>${points.length}</td><td>Cobertura del levantamiento topográfico</td></tr>
+  </table>`:""}
+
+  <h3>ZONIFICACIÓN PROPUESTA CON JUSTIFICACIÓN TOPOGRÁFICA</h3>
+  <table>
+    <tr><th>Zona</th><th>Dir.</th><th>Área m²</th><th>UTM Centro</th><th>Pend.</th><th>Solar</th><th>Justificación topográfica y productiva</th><th>Bienestar / Distancia</th><th>Prior.</th></tr>
+    ${zonesRows}
+  </table>
+
+  ${v.topografia_aprovechada?`<h3>APROVECHAMIENTO TOPOGRÁFICO</h3><p>${v.topografia_aprovechada}</p>`:""}
+  ${v.arboles_integrados&&trees.length?`<h3>INTEGRACIÓN DEL ÁRBOLADO</h3><p>${v.arboles_integrados}</p>`:""}
+
+  ${v.fases?.length?`<h3>PLAN DE FASES E INVERSIÓN</h3>
+  <table><tr><th>Fase</th><th>Nombre</th><th>Duración</th><th>Inversión</th></tr>
+  ${v.fases.map(f=>`<tr><td>${f.fase}</td><td>${f.nombre}</td><td>${f.duracion}</td><td>$${(f.inversion_mxn||0).toLocaleString()} MXN</td></tr>`).join("")}
+  <tr style="background:#f5f5f5;font-weight:700"><td colspan="3">TOTAL</td><td>$${(v.inversion_total_mxn||0).toLocaleString()} MXN</td></tr></table>`:""}
+
+  ${pois.length?`<h3>PUNTOS DE INTERÉS REGISTRADOS</h3>
+  <table><tr><th>Punto</th><th>Tipo</th><th>UTM WGS84</th></tr>${poiRows}</table>`:""}
+
+  ${trees.length?`<h3>INVENTARIO DE ÁRBOLES CON UTM</h3>
+  <p>${Object.entries(treesByType).map(([k,n])=>`<span class="chip">${k}: ${n}</span>`).join("")}</p>
+  <table><tr><th>Nombre</th><th>Especie</th><th>Tamaño</th><th>UTM WGS84</th></tr>${treeRows}</table>`:""}
+
+  <h3>CONSIDERACIONES TÉCNICAS</h3>
+  ${v.consideraciones?.map(c=>`<p>• ${c}</p>`).join("")||""}
+
+  <h3>VENTAJAS DEL PLAN</h3>
+  <p>${v.ventajas?.map(x=>`<span class="chip">${x}</span>`).join("")||""}</p>
+
+  <div class="footer">
+    <span>RanchoPlan IA · Análisis topográfico DEM + Hidrología D8 + Orientación solar · ${new Date().toLocaleDateString("es-MX",{day:"2-digit",month:"long",year:"numeric"})}</span>
+    <span>Sistema: UTM WGS84 Zona ${utmC?utmC.zone+""+utmC.hem:""} · Los Altos de Jalisco</span>
+  </div>
+</div></body></html>`;
+
+    const blob=new Blob([html],{type:"text/html;charset=utf-8"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");a.href=url;a.download=`MasterPlan_${v.nombre.replace(/\s+/g,"_")}.html`;
+    document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+    const w=window.open("","_blank");if(w){w.document.write(html);w.document.close();setTimeout(()=>w.print(),1200);}
+  };
+
+  // ── KML ──
+  const exportKML=()=>{
+    if(!points.length)return;
+    const v=masterPlan?.variantes[selV];
+    const kml=generateKML(points,trees,pois,analysis,v?.nombre||"RanchoPlan");
+    const blob=new Blob([kml],{type:"application/vnd.google-earth.kml+xml"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");a.href=url;a.download=`RanchoPlan.kml`;
+    document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+  };
+
+  // Reiniciar SOLO el recorrido GPS, conservando árboles y POIs
+  const resetGPS=()=>{
+    if(points.length>0){
+      if(!window.confirm("¿Reiniciar el recorrido GPS?\n\nSe borrarán los puntos caminados pero se conservarán los árboles y POIs marcados.")) return;
+    }
+    clearInterval(demoRef.current);
+    cancelAnimationFrame(animRef.current);
+    if(watchRef.current!=null){navigator.geolocation?.clearWatch(watchRef.current);watchRef.current=null;}
+    // Clear canvas immediately
+    const canvas=canvasRef.current;
+    if(canvas){
+      const ctx=canvas.getContext("2d");
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      ctx.fillStyle="#0a1a0a";
+      ctx.fillRect(0,0,canvas.width,canvas.height);
+    }
+    setPoints([]);setIsTracking(false);setAnalysis(null);setDemoMode(false);setError("");
+  };
+
+  const resetAll=()=>{
+    if(points.length>0||trees.length>0||pois.length>0){
+      if(!window.confirm("¿Borrar TODO?\n\nSe eliminarán el recorrido, árboles y puntos de interés. Esta acción no se puede deshacer.")) return;
+    }
+    setPhase("home");setPoints([]);setTrees([]);setPois([]);setMasterPlan(null);
+    setError("");setAnalysis(null);setDemoMode(false);setMapLayer("dem");
+    clearInterval(demoRef.current);if(watchRef.current!=null){navigator.geolocation?.clearWatch(watchRef.current);watchRef.current=null;}
+    setIsTracking(false);
+  };
+
+  const distVal=points.length>1?Math.round(totalDist(points)||0):0;
+  const b2=bnds(points);
+  const areaVal=b2&&!isNaN(b2.minLat)?Math.round(((b2.maxLat-b2.minLat)*111000*(b2.maxLng-b2.minLng)*111000*Math.cos(b2.minLat*Math.PI/180))||0):0;
+  const lastPt=points.length?points[points.length-1]:null;
+  const utmLive=(lastPt&&!isNaN(lastPt.lat)&&!isNaN(lastPt.lng))?latLngToUTM(lastPt.lat,lastPt.lng):null;
+  const as=analysis?.zones?.stats;
+
+  return(
+    <div style={{minHeight:"100vh",background:"#0f1f0f",color:"#e8ead4",fontFamily:"Georgia,serif"}}>
+      <div className="safe-top" style={{background:"linear-gradient(180deg,#1a2e1a,#0f1f0f)",borderBottom:"1px solid #2d4a1e",padding:"11px 16px",display:"flex",alignItems:"center",gap:"10px"}}>
+        <span style={{fontSize:"20px"}}>🌄</span>
+        <div>
+          <div style={{fontSize:"15px",fontWeight:"bold",color:"#F5C842",letterSpacing:"1px"}}>RanchoPlan IA</div>
+          <div style={{fontSize:"8px",color:"#789060",textTransform:"uppercase",letterSpacing:"2px"}}>Los Altos de Jalisco · DEM + Hidrología + Solar</div>
+        </div>
+        {phase!=="home"&&<button onClick={resetAll} style={{marginLeft:"auto",background:"transparent",border:"1px solid #3a5a2a",color:"#aac080",padding:"5px 11px",borderRadius:"20px",cursor:"pointer",fontSize:"11px"}}>← Inicio</button>}
+      </div>
+
+      {error&&<div style={{background:"#4a1010",border:"1px solid #8b2020",margin:"8px 14px",padding:"8px 14px",borderRadius:"8px",fontSize:"12px",color:"#ffaaaa"}}>⚠️ {error}<button onClick={()=>setError("")} style={{float:"right",background:"none",border:"none",color:"#ffaaaa",cursor:"pointer",fontSize:"16px"}}>✕</button></div>}
+
+      {/* HOME */}
+      {phase==="home"&&<div style={{maxWidth:"440px",margin:"0 auto",padding:"28px 16px",textAlign:"center"}}>
+        <div style={{fontSize:"52px",marginBottom:"8px"}}>🏔️</div>
+        <h1 style={{fontSize:"21px",color:"#F5C842",marginBottom:"8px"}}>RanchoPlan IA</h1>
+        <p style={{color:"#8a9a70",fontSize:"12px",lineHeight:"1.75",marginBottom:"20px"}}>Levantamiento topográfico GPS · DEM · Hidrología D8 · Orientación solar · UTM WGS84</p>
+        <div style={{display:"flex",flexDirection:"column",gap:"10px",marginBottom:"18px"}}>
+          <button onClick={()=>{setPhase("tracking");startGPS();}} style={{background:"linear-gradient(135deg,#2d5a27,#3d7a35)",color:"#fff",border:"none",padding:"15px",borderRadius:"12px",fontSize:"15px",cursor:"pointer"}}>📍 Iniciar Levantamiento GPS</button>
+          <button onClick={()=>{setPhase("tracking");startDemo();}} style={{background:"#1a2e1a",color:"#ccd8a0",border:"1px solid #3a5a2a",padding:"12px",borderRadius:"12px",fontSize:"12px",cursor:"pointer"}}>🎭 Demo — barrido en cuadrícula</button>
+        </div>
+        <div style={{background:"#2a1a0a",border:"1px solid #6a3a10",borderRadius:"10px",padding:"12px",marginBottom:"14px",textAlign:"left"}}>
+          <div style={{fontSize:"10px",color:"#e09050",fontWeight:"bold",marginBottom:"6px"}}>⚠️ Para generar el plan con IA</div>
+          <div style={{fontSize:"11px",color:"#a07850",lineHeight:"1.6",marginBottom:"8px"}}>
+            CodePen bloquea la API. Para que funcione el botón "🤖 Plan", abre la app desde <strong style={{color:"#F5C842"}}>Glitch.com</strong>:
+          </div>
+          <div style={{fontSize:"10px",color:"#789060",lineHeight:"1.7"}}>
+            1. Ve a <strong>glitch.com/edit/#!/remix/hello-webpage</strong><br/>
+            2. Abre <strong>index.html</strong> → borra todo → pega el código<br/>
+            3. Toca <strong>"Show → In a new window"</strong><br/>
+            4. Esa URL funciona con GPS + API ✅
+          </div>
+        </div>
+        <div style={{display:"none"}}>
+        </div>
+        <div style={{background:"#1a2e1a",borderRadius:"12px",padding:"13px",textAlign:"left"}}>
+          <div style={{fontSize:"10px",color:"#789060",textTransform:"uppercase",letterSpacing:"1px",marginBottom:"8px"}}>Protocolo de levantamiento</div>
+          {["1. Camina el perímetro completo","2. Recorre el interior en franjas paralelas N-S cada 8-10 m","3. Marca 🌳 junto a cada árbol relevante","4. Marca 📍 accesos, agua, construcciones existentes","5. Con 12+ puntos el análisis DEM se activa","6. El plan usa hidrología real, solar y pendientes"].map((t,i)=>(
+            <div key={i} style={{fontSize:"11px",color:"#8a9a70",marginBottom:"4px"}}>{t}</div>
+          ))}
+        </div>
+      </div>}
+
+      {/* TRACKING */}
+      {phase==="tracking"&&<div style={{padding:"11px",maxWidth:"480px",margin:"0 auto"}}>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"5px",marginBottom:"8px"}}>
+          {[[points.length,"PUNTOS"],[(isNaN(distVal)?0:distVal)+"m","RECORRIDO"],[isNaN(areaVal/10000)?"0.00":(areaVal/10000).toFixed(2)+"ha","ÁREA"],[trees.length+"🌳 "+pois.length+"📍","MARCAS"]].map(([v2,l])=>(
+            <div key={l} style={{background:"#1a2e1a",borderRadius:"7px",padding:"6px",textAlign:"center"}}>
+              <div style={{fontSize:"13px",fontWeight:"bold",color:"#F5C842"}}>{v2}</div>
+              <div style={{fontSize:"8px",color:"#789060"}}>{l}</div>
+            </div>
+          ))}
+        </div>
+
+        {utmLive&&<div style={{background:"#1a2e1a",borderRadius:"7px",padding:"6px 10px",marginBottom:"7px",fontSize:"9px",color:"#5a9060",display:"flex",gap:"6px",alignItems:"center"}}>
+          <span style={{color:"#F5C842"}}>📍 UTM</span>
+          <span style={{fontFamily:"monospace",color:"#a0c080"}}>{utmLive.str}</span>
+          {analysis&&<span style={{marginLeft:"auto",color:"#4CAF50",fontSize:"9px"}}>✅ DEM activo</span>}
+        </div>}
+
+        <div style={{display:"flex",gap:"6px",marginBottom:"7px",flexWrap:"wrap"}}>
+          {isTracking
+            ?<button onClick={demoMode?stopDemo:stopGPS} style={{background:"#8b2020",color:"#fff",border:"none",padding:"10px 13px",borderRadius:"8px",cursor:"pointer",fontSize:"12px",fontWeight:"bold"}}>⏹ Pausar</button>
+            :<button onClick={demoMode?startDemo:startGPS} style={{background:"#2d5a27",color:"#fff",border:"none",padding:"10px 13px",borderRadius:"8px",cursor:"pointer",fontSize:"12px"}}>▶ Continuar</button>
+          }
+          <button onClick={handleMarkTree} style={{flex:1,background:"linear-gradient(135deg,#1a4a1a,#2a7a2a)",color:"#a0e080",border:"2px solid #3a8a3a",padding:"10px 8px",borderRadius:"8px",cursor:"pointer",fontSize:"12px",fontWeight:"bold"}}>🌳 Árbol</button>
+          <button onClick={handleMarkPOI} style={{flex:1,background:"linear-gradient(135deg,#4a2a0a,#8a5a1a)",color:"#e0c080",border:"2px solid #8a5a0a",padding:"10px 8px",borderRadius:"8px",cursor:"pointer",fontSize:"12px",fontWeight:"bold"}}>📍 POI</button>
+          {points.length>=12&&!isTracking&&(
+            <button onClick={generatePlan} disabled={loading} style={{background:loading?"#2a3a1a":"linear-gradient(135deg,#8B6914,#F5C842)",color:loading?"#789060":"#1a1a0a",border:"none",padding:"10px 13px",borderRadius:"8px",cursor:loading?"not-allowed":"pointer",fontSize:"12px",fontWeight:"bold"}}>
+              {loading?"⏳":"🤖 Plan"}
+            </button>
+          )}
+        </div>
+
+        {/* Botón reiniciar recorrido GPS */}
+        <div style={{display:"flex",gap:"6px",marginBottom:"7px",alignItems:"center"}}>
+          <button onClick={resetGPS} disabled={isTracking}
+            style={{background:isTracking?"#1a1a1a":"#2a1a0a",color:isTracking?"#555":"#e09050",border:"2px solid "+(isTracking?"#333":"#6a3a10"),padding:"8px 14px",borderRadius:"8px",cursor:isTracking?"not-allowed":"pointer",fontSize:"12px",fontWeight:"bold"}}>
+            🔄 Reiniciar recorrido
+          </button>
+          <div style={{flex:1,fontSize:"9px",color:"#5a6a50",lineHeight:"1.4"}}>
+            {isTracking?"Pausa primero":points.length>0?"Borra "+points.length+" pts · conserva "+trees.length+"🌳 "+pois.length+"📍":"Sin recorrido"}
+          </div>
+        </div>
+
+        <div style={{display:"flex",gap:"4px",marginBottom:"6px"}}>
+          {[["dem","🗺 DEM"],["slope","📐 Pendiente"],["solar","☀️ Solar"],["hidro","💧 Hidrología"],["gps","📍 GPS"]].map(([id,lbl])=>(
+            <button key={id} onClick={()=>setMapLayer(id)} style={{flex:1,padding:"4px 2px",borderRadius:"6px",border:mapLayer===id?"2px solid #F5C842":"1px solid #2a3a1a",background:mapLayer===id?"#2d4a1e":"#1a2e1a",color:mapLayer===id?"#F5C842":"#789060",cursor:"pointer",fontSize:"9px"}}>
+              {lbl}
+            </button>
+          ))}
+        </div>
+
+        <div style={{display:"flex",alignItems:"center",gap:"7px",marginBottom:"6px",fontSize:"10px",color:isTracking?"#4CAF50":"#888"}}>
+          <div style={{width:"7px",height:"7px",borderRadius:"50%",background:isTracking?"#4CAF50":"#555",animation:isTracking?"pulse 1s infinite":"none"}}/>
+          {isTracking?(demoMode?"Simulando barrido en cuadrícula…":"📡 GPS activo — sigue el protocolo de franjas"):points.length>=12?"Análisis DEM completo — listo para generar plan":points.length>0?`Puntos: ${points.length}/12 mínimo`:"Listo para iniciar"}
+        </div>
+
+        <canvas ref={canvasRef} width={440} height={300} style={{width:"100%",borderRadius:"11px",background:"#0a1a0a",border:"1px solid #2a3a1a",display:"block",marginBottom:"7px"}}/>
+
+        {/* Panel de análisis */}
+        {as&&<div style={{background:"#1a2e1a",borderRadius:"10px",padding:"10px",marginBottom:"7px"}}>
+          <div style={{fontSize:"10px",color:"#F5C842",marginBottom:"7px",textTransform:"uppercase",letterSpacing:"1px",fontWeight:"bold"}}>Análisis topográfico en tiempo real</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"6px",marginBottom:"7px"}}>
+            {[["🟢","Plano",as.pctFlat+"%","Cultivos"],["🟡","Suave",as.pctGentle+"%","Ganadería"],["🔴","Pend.",as.pctSteep+"%","Conservar"],["☀️","Solar",as.pctSolarHigh+"%","Frutales"],["🌑","Sombra",as.pctShade+"%","Animales"],["💧","Hídrico",as.sinkCount+" zonas","Reservorio"]].map(([ic,lbl,val,hint])=>(
+              <div key={lbl} style={{background:"#0f1f0f",borderRadius:"7px",padding:"6px",textAlign:"center"}}>
+                <div style={{fontSize:"14px"}}>{ic}</div>
+                <div style={{fontSize:"11px",fontWeight:"bold",color:"#F5C842"}}>{val}</div>
+                <div style={{fontSize:"8px",color:"#789060"}}>{lbl}</div>
+                <div style={{fontSize:"8px",color:"#4a6a4a"}}>{hint}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{fontSize:"9px",color:"#5a7050"}}>
+            Altitud: {as.elevRange} · Aptitud reservorio: <span style={{color:as.reservoirSuitability==="alta"?"#4CAF50":as.reservoirSuitability==="media"?"#F1C40F":"#E74C3C"}}>{as.reservoirSuitability}</span> · Cultivos: <span style={{color:as.cropSuitability==="alta"?"#4CAF50":"#F1C40F"}}>{as.cropSuitability}</span>
+          </div>
+        </div>}
+
+        {trees.length>0&&<div style={{background:"#1a2e1a",borderRadius:"9px",padding:"9px",marginBottom:"6px"}}>
+          <div style={{fontSize:"9px",color:"#789060",marginBottom:"5px",textTransform:"uppercase",letterSpacing:"1px"}}>Árboles ({trees.length}) · POIs ({pois.length})</div>
+          <div style={{maxHeight:"80px",overflowY:"auto"}}>
+            {[...trees.map(t=>({...t,_type:"tree"})),...pois.map(p=>({...p,_type:"poi"}))].map((item,i)=>(
+              <div key={i} style={{display:"flex",gap:"6px",alignItems:"center",fontSize:"10px",marginBottom:"2px",color:item._type==="tree"?"#a0c080":"#e0a060"}}>
+                <span>{item.icon}</span><span style={{flex:1}}>{item.name||item.label}</span>
+                <span style={{fontFamily:"monospace",fontSize:"8px",color:"#5a7050"}}>{latLngToUTM(item.lat,item.lng).easting}E</span>
+              </div>
+            ))}
+          </div>
+        </div>}
+
+        {points.length>0&&points.length<12&&!isTracking&&<div style={{padding:"8px",background:"#2a2a1a",borderRadius:"7px",fontSize:"10px",color:"#a09050",textAlign:"center"}}>
+          {points.length} puntos registrados — necesitas 12+ para análisis DEM completo. Sigue caminando el interior en franjas.
+        </div>}
+
+        {loading&&<div style={{textAlign:"center",padding:"14px",color:"#F5C842"}}>
+          <div style={{fontSize:"26px",animation:"spin 1s linear infinite",display:"inline-block"}}>⚙️</div>
+          <div style={{marginTop:"7px",fontSize:"12px"}}>Procesando DEM + hidrología + solar → generando plan…</div>
+        </div>}
+      </div>}
+
+      {/* TREE MODAL */}
+      {treeModal&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.85)",display:"flex",alignItems:"flex-end",zIndex:200}}>
+        <div style={{background:"#1a2e1a",borderRadius:"20px 20px 0 0",padding:"18px 16px 28px",width:"100%",maxWidth:"480px",margin:"0 auto",border:"1px solid #3a5a2a",borderBottom:"none"}}>
+          <div style={{textAlign:"center",fontSize:"26px",marginBottom:"2px"}}>🌳</div>
+          <h3 style={{color:"#F5C842",textAlign:"center",marginBottom:"2px",fontSize:"15px"}}>Registrar Árbol</h3>
+          {pendingPos&&<p style={{color:"#5a9060",fontSize:"9px",textAlign:"center",marginBottom:"10px",fontFamily:"monospace"}}>{latLngToUTM(pendingPos.lat,pendingPos.lng).str}</p>}
+          <div style={{marginBottom:"10px"}}>
+            <div style={{fontSize:"9px",color:"#789060",marginBottom:"4px",textTransform:"uppercase",letterSpacing:"1px"}}>Nombre (opcional)</div>
+            <input value={treeName} onChange={e=>setTreeName(e.target.value)} placeholder="ej. Encino del pozo…" style={{width:"100%",background:"#0f1f0f",border:"1px solid #2a3a1a",borderRadius:"7px",padding:"7px 10px",color:"#e8ead4",fontSize:"12px",outline:"none"}}/>
+          </div>
+          <div style={{marginBottom:"10px"}}>
+            <div style={{fontSize:"9px",color:"#789060",marginBottom:"5px",textTransform:"uppercase",letterSpacing:"1px"}}>Tipo *</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"4px"}}>
+              {TREE_TYPES.map(t=>(
+                <button key={t.id} onClick={()=>setTreeType(t.id)} style={{padding:"6px 3px",borderRadius:"7px",border:treeType===t.id?"2px solid #F5C842":"1px solid #2a3a1a",background:treeType===t.id?"#2d4a1e":"#0f1f0f",color:treeType===t.id?"#F5C842":"#8a9a70",cursor:"pointer",fontSize:"10px",textAlign:"center"}}>
+                  <div style={{fontSize:"15px"}}>{t.icon}</div><div>{t.label}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div style={{marginBottom:"14px"}}>
+            <div style={{fontSize:"9px",color:"#789060",marginBottom:"5px",textTransform:"uppercase",letterSpacing:"1px"}}>Tamaño *</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"4px"}}>
+              {TREE_SIZES.map(s=>(
+                <button key={s.id} onClick={()=>setTreeSize(s.id)} style={{padding:"6px 2px",borderRadius:"7px",border:treeSize===s.id?"2px solid #F5C842":"1px solid #2a3a1a",background:treeSize===s.id?"#2d4a1e":"#0f1f0f",color:treeSize===s.id?"#F5C842":"#8a9a70",cursor:"pointer",fontSize:"9px",textAlign:"center"}}>
+                  <div style={{fontWeight:"bold"}}>{s.label}</div><div style={{fontSize:"8px",opacity:.7}}>{s.sub}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div style={{display:"flex",gap:"8px"}}>
+            <button onClick={()=>setTreeModal(false)} style={{flex:1,padding:"10px",borderRadius:"8px",border:"1px solid #3a3a2a",background:"transparent",color:"#789060",cursor:"pointer",fontSize:"12px"}}>Cancelar</button>
+            <button onClick={confirmTree} style={{flex:2,padding:"10px",borderRadius:"8px",border:"none",background:treeType&&treeSize?"linear-gradient(135deg,#2d7a2d,#4aaa3a)":"#2a3a2a",color:treeType&&treeSize?"#fff":"#789060",cursor:treeType&&treeSize?"pointer":"not-allowed",fontSize:"13px",fontWeight:"bold"}}>🌳 Guardar</button>
+          </div>
+        </div>
+      </div>}
+
+      {/* POI MODAL */}
+      {poiModal&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.85)",display:"flex",alignItems:"flex-end",zIndex:200}}>
+        <div style={{background:"#1a2e1a",borderRadius:"20px 20px 0 0",padding:"18px 16px 28px",width:"100%",maxWidth:"480px",margin:"0 auto",border:"1px solid #5a4a1a",borderBottom:"none"}}>
+          <div style={{textAlign:"center",fontSize:"26px",marginBottom:"2px"}}>📍</div>
+          <h3 style={{color:"#F5C842",textAlign:"center",marginBottom:"2px",fontSize:"15px"}}>Punto de Interés</h3>
+          {pendingPos&&<p style={{color:"#9a7050",fontSize:"9px",textAlign:"center",marginBottom:"10px",fontFamily:"monospace"}}>{latLngToUTM(pendingPos.lat,pendingPos.lng).str}</p>}
+          <div style={{marginBottom:"10px"}}>
+            <div style={{fontSize:"9px",color:"#789060",marginBottom:"4px",textTransform:"uppercase",letterSpacing:"1px"}}>Nombre / descripción (opcional)</div>
+            <input value={poiName} onChange={e=>setPoiName(e.target.value)} placeholder="ej. Entrada norte, Pozo antiguo…" style={{width:"100%",background:"#0f1f0f",border:"1px solid #2a3a1a",borderRadius:"7px",padding:"7px 10px",color:"#e8ead4",fontSize:"12px",outline:"none"}}/>
+          </div>
+          <div style={{marginBottom:"14px"}}>
+            <div style={{fontSize:"9px",color:"#789060",marginBottom:"5px",textTransform:"uppercase",letterSpacing:"1px"}}>Tipo *</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"4px"}}>
+              {POI_TYPES.map(t=>(
+                <button key={t.id} onClick={()=>setPoiType(t.id)} style={{padding:"8px 4px",borderRadius:"7px",border:poiType===t.id?"2px solid #F5C842":"1px solid #2a3a1a",background:poiType===t.id?"#3a3a0e":"#0f1f0f",color:poiType===t.id?"#F5C842":"#8a9a70",cursor:"pointer",fontSize:"10px",textAlign:"center"}}>
+                  <div style={{fontSize:"18px"}}>{t.icon}</div><div>{t.label}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div style={{display:"flex",gap:"8px"}}>
+            <button onClick={()=>setPoiModal(false)} style={{flex:1,padding:"10px",borderRadius:"8px",border:"1px solid #3a3a2a",background:"transparent",color:"#789060",cursor:"pointer",fontSize:"12px"}}>Cancelar</button>
+            <button onClick={confirmPOI} style={{flex:2,padding:"10px",borderRadius:"8px",border:"none",background:poiType?"linear-gradient(135deg,#7a5a1a,#c09030)":"#2a3a2a",color:poiType?"#fff":"#789060",cursor:poiType?"pointer":"not-allowed",fontSize:"13px",fontWeight:"bold"}}>📍 Guardar POI</button>
+          </div>
+        </div>
+      </div>}
+
+      {/* MASTER PLAN */}
+      {phase==="masterplan"&&masterPlan&&<div style={{padding:"12px",maxWidth:"520px",margin:"0 auto"}}>
+        <h2 style={{fontSize:"15px",color:"#F5C842",marginBottom:"2px"}}>Master Plan</h2>
+        <p style={{color:"#789060",fontSize:"9px",marginBottom:"11px"}}>{points.length} pts · DEM interpolado · Hidrología D8 · Orientación solar · {trees.length} árboles · {pois.length} POIs</p>
+        <div style={{display:"flex",gap:"5px",marginBottom:"11px"}}>
+          {masterPlan.variantes.map((v2,i)=>(
+            <button key={i} onClick={()=>setSelV(i)} style={{flex:1,padding:"8px 4px",borderRadius:"8px",border:selV===i?"2px solid #F5C842":"1px solid #2a3a1a",background:selV===i?"#2d4a1e":"#1a2e1a",color:selV===i?"#F5C842":"#8a9a70",cursor:"pointer",fontSize:"8px",textAlign:"center"}}>
+              Opción {i+1}<div style={{fontWeight:"bold",marginTop:"2px",fontSize:"9px",color:selV===i?"#F5C842":"#aaa"}}>{v2.nombre?.split(" ").slice(0,3).join(" ")}</div>
+            </button>
+          ))}
+        </div>
+        {(()=>{
+          const v=masterPlan.variantes[selV];if(!v)return null;
+          return <div>
+            <div style={{background:"#1a2e1a",borderRadius:"11px",padding:"12px",marginBottom:"8px"}}>
+              <div style={{fontSize:"14px",color:"#F5C842",marginBottom:"4px"}}>{v.nombre}</div>
+              <div style={{fontSize:"11px",color:"#a0b880",lineHeight:"1.6",marginBottom:"8px"}}>{v.descripcion}</div>
+              {v.topografia_aprovechada&&<div style={{fontSize:"10px",color:"#789060",background:"#0f1f0f",borderRadius:"6px",padding:"6px",marginBottom:"5px"}}>🗻 {v.topografia_aprovechada}</div>}
+              {v.arboles_integrados&&trees.length>0&&<div style={{fontSize:"10px",color:"#789060",background:"#0f1f0f",borderRadius:"6px",padding:"6px",marginBottom:"6px"}}>🌳 {v.arboles_integrados}</div>}
+              <div style={{display:"flex",gap:"5px",flexWrap:"wrap"}}>
+                <span style={{background:"#2d4a1e",color:"#a0c060",padding:"2px 7px",borderRadius:"20px",fontSize:"9px"}}>💰 ${((v.inversion_total_mxn||0)/1e6).toFixed(1)}M MXN</span>
+                <span style={{background:"#2d4a1e",color:"#a0c060",padding:"2px 7px",borderRadius:"20px",fontSize:"9px"}}>📐 {isNaN(areaVal/10000)?"—":(areaVal/10000).toFixed(2)} ha</span>
+                {as&&<span style={{background:"#2d4a1e",color:"#a0c060",padding:"2px 7px",borderRadius:"20px",fontSize:"9px"}}>🟢 {as.pctFlat}% plano</span>}
+              </div>
+            </div>
+            <div style={{marginBottom:"8px"}}>
+              <div style={{fontSize:"9px",color:"#789060",marginBottom:"5px",textTransform:"uppercase",letterSpacing:"1px"}}>Zonificación con justificación topográfica</div>
+              {v.zonas?.map((z,i)=>(
+                <div key={i} style={{background:"#1a2e1a",borderLeft:`4px solid ${ZONE_COLORS[z.id]||"#4a4"}`,borderRadius:"7px",padding:"7px 9px",display:"flex",gap:"7px",alignItems:"flex-start",marginBottom:"4px"}}>
+                  <span style={{fontSize:"16px",flexShrink:0}}>{ZONE_ICONS[z.id]||"📍"}</span>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:"bold",fontSize:"11px",color:"#c0d090",marginBottom:"1px"}}>{z.nombre}</div>
+                    <div style={{fontSize:"9px",color:"#789060",marginBottom:"2px"}}>
+                      📍 {z.ubicacion} · {z.area_m2?.toLocaleString()} m²
+                      {z.pendiente_pct!=null&&<span> · 📐 {z.pendiente_pct}%</span>}
+                      {z.orientacion_solar&&<span> · ☀️ {z.orientacion_solar}</span>}
+                    </div>
+                    <div style={{fontSize:"10px",color:"#8a9870",lineHeight:"1.5"}}>{z.justificacion}</div>
+                    {z.distancia_a&&<div style={{fontSize:"9px",color:"#5a8a7a",marginTop:"2px"}}>📏 {z.distancia_a}</div>}
+                    {z.notas_bienestar&&<div style={{fontSize:"9px",color:"#7a9a5a",marginTop:"2px"}}>🐾 {z.notas_bienestar}</div>}
+                  </div>
+                  <span style={{fontSize:"8px",color:z.prioridad==="alta"?"#F5C842":z.prioridad==="media"?"#a0c060":"#789060",flexShrink:0,textTransform:"uppercase",fontWeight:"bold"}}>{z.prioridad}</span>
+                </div>
+              ))}
+            </div>
+            {v.fases?.length>0&&<div style={{background:"#1a2e1a",borderRadius:"9px",padding:"10px",marginBottom:"8px"}}>
+              <div style={{fontSize:"9px",color:"#789060",marginBottom:"6px",textTransform:"uppercase",letterSpacing:"1px"}}>Fases</div>
+              {v.fases.map((f,i)=>(
+                <div key={i} style={{display:"flex",gap:"8px",alignItems:"center",marginBottom:"4px",fontSize:"11px"}}>
+                  <span style={{background:"#F5C842",color:"#1a1a0a",borderRadius:"50%",width:"18px",height:"18px",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:"bold",fontSize:"8px",flexShrink:0}}>{f.fase}</span>
+                  <div style={{flex:1}}><span style={{color:"#c0d090",fontWeight:"bold"}}>{f.nombre}</span><span style={{color:"#789060"}}> · {f.duracion}</span></div>
+                  <span style={{color:"#F5C842",fontSize:"10px",flexShrink:0}}>${((f.inversion_mxn||0)/1e6).toFixed(1)}M</span>
+                </div>
+              ))}
+            </div>}
+            {v.consideraciones?.length>0&&<div style={{background:"#1a2e1a",borderRadius:"9px",padding:"10px",marginBottom:"10px"}}>
+              <div style={{fontSize:"9px",color:"#789060",marginBottom:"5px",textTransform:"uppercase",letterSpacing:"1px"}}>Consideraciones</div>
+              {v.consideraciones.map((c,i)=><div key={i} style={{fontSize:"10px",color:"#a0b880",marginBottom:"4px",paddingLeft:"8px",borderLeft:"2px solid #3d5a2a"}}>• {c}</div>)}
+            </div>}
+            <div style={{display:"flex",gap:"7px",flexDirection:"column"}}>
+              <button onClick={exportPDF} style={{width:"100%",background:"linear-gradient(135deg,#8B6914,#F5C842)",color:"#1a1a0a",border:"none",padding:"13px",borderRadius:"11px",fontSize:"14px",fontWeight:"bold",cursor:"pointer"}}>
+                📄 PDF — Plano topográfico + UTM
+              </button>
+              <button onClick={exportKML} style={{width:"100%",background:"linear-gradient(135deg,#1a3a6a,#2a6aaa)",color:"#fff",border:"none",padding:"11px",borderRadius:"11px",fontSize:"13px",fontWeight:"bold",cursor:"pointer"}}>
+                🌐 KML — Google Earth (recorrido + zonas + árboles + hidrología)
+              </button>
+            </div>
+          </div>;
+        })()}
+      </div>}
+
+      <div className="safe-bot" style={{height:"16px"}}/>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
